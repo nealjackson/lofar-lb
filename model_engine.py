@@ -2,13 +2,11 @@
 #    from u-v data on a particular closure triangle
 #           v.1 Neal Jackson, 2015.09.29
 #           v.2 NJ, 2017.01.16 converted to CASA, many changes
-import astropy,numpy as np,scipy,sys,os,glob,warnings,pyrap,matplotlib
+import astropy,numpy as np,scipy,sys,os,glob,warnings,pyrap,multiprocessing
 from pyrap import tables as pt
 from astropy.coordinates import SkyCoord
-from scipy import optimize; from scipy.optimize import fmin
-from scipy import ndimage; from scipy.ndimage import measurements
-from matplotlib import patches,pyplot as plt
-from matplotlib.patches import Ellipse
+from scipy import optimize,ndimage; from scipy.ndimage import measurements
+import matplotlib; from matplotlib import patches,pyplot as plt
 from correlate import *; from mkgauss import *
 plt.rcParams['image.origin']='lower'
 plt.rcParams['image.interpolation']='nearest'
@@ -178,10 +176,10 @@ def plotimg (a01,a02,A01,A02,cp012,CP012,model,goodness,plottype,itel,aplot,trna
     ells = []
     for i in model:
         if i[MW]!=0.0:
-            ells.append(Ellipse(xy=[i[MX],i[MY]],width=2.*i[MW],\
+            ells.append(patches.Ellipse(xy=[i[MX],i[MY]],width=2.*i[MW],\
                 height=2.*i[MW]*i[MR],lw=0.5,angle=i[MP]+90.,fill=0.0))
         else:
-            ells.append(Ellipse(xy=[i[MX],i[MY]],width=0.1,\
+            ells.append(patches.Ellipse(xy=[i[MX],i[MY]],width=0.1,\
                 height=0.1,lw=0.5,angle=0.,fill=1.0,color='red'))
     if plottype in [1,10]:
         plt.subplot2grid((6,5),(0,0),rowspan=2)
@@ -307,16 +305,48 @@ def getmodel(coord,beam,bsub,gridsize):
             grid = grid[1:-1,1:-1]
     return grid,ginc,grid.shape[0],pflux,pcoord
 
-def grid_search (model,cpt,gridcpt,uvw01,uvw02,uvw12,a01,a02,cp012,ampfiddle,plottype,itel,aplot,trname,grid,gsiz,ginc,glim):
+def parallel_function(f):
+    def easy_parallize(f, sequence):
+        from multiprocessing import Pool
+        ncores = max(1,int(os.popen('nproc').read())-1)  # use all cores - 1
+        pool = Pool(processes=ncores) # depends on available cores
+        print f
+        print sequence
+        result = pool.map(f, sequence) # for i in sequence: result[i] = f(i)
+        cleaned = [x for x in result if not x is None] # getting results
+        cleaned = np.asarray(cleaned)
+        pool.close() # not optimal! but easy
+        pool.join()
+        return cleaned
+    from functools import partial
+    return partial(easy_parallize, f)
+
+def grid_search_thread (k):
+    return mod_func(k[0],k[1],k[2],k[3],k[4],k[5],k[6],k[7],k[8],\
+                    k[9],k[10],k[11],k[12],k[13],k[14])
+
+def grid_search (model,cpt,gridcpt,uvw01,uvw02,uvw12,a01,a02,cp012,ampfiddle,\
+                 plottype,itel,aplot,trname,grid,gsiz,ginc,glim):
     opt = np.zeros_like(model,dtype='bool')
+    args = []
     for ix in range(gsiz):
         x = ginc*(ix-gsiz/2.0)   # x,y in arcsec; a in ginc-size pixels
         for iy in range(gsiz):
             if grid[iy,ix] == gridcpt:
                 y = ginc*(iy-gsiz/2.0)
                 model[cpt][0],model[cpt][1] = x,y
-                aplot[iy][ix] = mod_func ([],model,opt,uvw01,uvw02,uvw12,a01,a02,cp012,ampfiddle,plottype,itel,aplot,trname,glim)
-                print 'Grid point %d: (%.3f %.3f), chisq %.4f' %(ix*gsiz+iy,x,y,aplot[iy][ix])
+#                aplot[iy][ix] = mod_func ([],model,opt,uvw01,uvw02,uvw12,\
+#                    a01,a02,cp012,ampfiddle,plottype,itel,aplot,trname,glim)
+#  if arg array too big make uvw01....cp012 global
+                arg = ([],model,opt,uvw01,uvw02,uvw12,a01,a02,cp012,\
+                       ampfiddle,plottype,itel,aplot,trname,glim,iy,ix)
+                args.append(arg)
+#                print 'Grid point %d: (%.3f %.3f), chisq %.4f' %\
+#                    (ix*gsiz+iy,x,y,aplot[iy][ix])
+    grid_search_thread.parallel = parallel_function(grid_search_thread)
+    parallel_result = grid_search_thread.parallel (args)
+    for i in range(len(parallel_result)):
+        aplot[args[i][-2],args[i][-1]] = parallel_result[i]
     np.putmask(aplot,np.isnan(aplot),np.nanmax(aplot))
     model[cpt,:2] = ginc*(np.asarray(measurements.minimum_position \
             (aplot)[::-1])-0.5*np.asarray(grid.shape))
@@ -336,7 +366,7 @@ def adjust_all (model,uvw01,uvw02,uvw12,a01,a02,cp012,ampfiddle,plottype,itel,ap
     opt = np.ones_like(model,dtype='bool')
     x0 = np.ravel(model)[np.ravel(opt)]
     args = (model,opt,uvw01,uvw02,uvw12,a01,a02,cp012,ampfiddle,plottype,itel,aplot,trname,glim)
-    xopt = fmin(mod_func, x0, args=args, maxiter=100)
+    xopt = optimize.fmin(mod_func, x0, args=args, maxiter=100)
     model,opt = np.ravel(model),np.ravel(opt)
     model[opt] = xopt
     model = model.reshape(len(model)/6,6)
@@ -348,7 +378,7 @@ def refine_points (model,cpts,uvw01,uvw02,uvw12,a01,a02,cp012,ampfiddle,plottype
         opt[i,2:] = True
     x0 = np.ravel(model)[np.ravel(opt)]
     args = (model,opt,uvw01,uvw02,uvw12,a01,a02,cp012,ampfiddle,plottype,itel,aplot,trname,glim)
-    xopt = fmin(mod_func, x0, args=args, maxiter=100)
+    xopt = optimize.fmin(mod_func, x0, args=args, maxiter=100)
     model,opt = np.ravel(model),np.ravel(opt)
     model[opt] = xopt
     model = model.reshape(len(model)/6,6)
