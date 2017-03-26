@@ -3,13 +3,21 @@
 #           v.1 Neal Jackson, 2015.09.29
 #           v.2 NJ, 2017.01.16 converted to CASA, many changes
 #           v.3 NJ, 2017.03.07 parallelised
-import astropy,numpy as np,scipy,sys,os,glob,warnings,pyrap,multiprocessing,matplotlib
-from pyrap import tables as pt; from matplotlib import pyplot as plt
-from scipy import ndimage,optimize; from correlate import *; from mkgauss import *
+import astropy,numpy as np,scipy,sys,os,glob,warnings,multiprocessing,matplotlib,idx_tels
+from matplotlib import pyplot as plt; from scipy import ndimage,optimize
+from correlate import *; from mkgauss import *
+try:
+    import pyrap; from pyrap import tables as pt
+    have_tables = True
+except:
+    have_tables = False
+
 plt.rcParams['image.origin'],plt.rcParams['image.interpolation']='lower','nearest'
 warnings.simplefilter('ignore')
 RAD2ARC,LIGHT,FIRSTNPY = 3600.*180./np.pi, 2.99792458E+8, './first_2008.simple.npy'
 MX,MY,MF,MW,MR,MP = range(6)
+ISPARALLEL = int(os.popen('nproc').read())>4
+CASAPY = '/pkg/casa-release-4.7.0-1-el6/bin/casa'
 
 # Make a movie from a set of png files
 def movie (fps=4):
@@ -33,59 +41,84 @@ def uvw2reim (uvw, model):
         im += cmpamp * np.sin(cmpphs)
     return re,im
 
-# From a MS, return the index numbers of telescopes given as an array of 3 strings
-def get_idx_tels (data, tel):
-    command = 'taql \'select NAME from %s/ANTENNA\' >closure_which'%data
-    os.system(command)
-    f = open('closure_which')
-    for line in f:
-        if not 'select' in line:
-            try:
-                a = int(line) # it's just a number, use STATION column instead
-                f.close()
-                command = 'taql \'select STATION from %s/ANTENNA\' >closure_which'%data
-                os.system(command)
-                break
-            except:
-                f.close()
-                break
-    idx_tels, iline = [-1,-1,-1], 0
-    f = open('closure_which')
-    for line in f:
-        if not 'select' in line:
-            for i in range(3):
-                if tel[i]==line[:len(tel[i])]:
-                    idx_tels[i] = iline
-            iline += 1
+def taql_calc (vis, vistable, qtab, qtype):
+    os.system('taql \'CALC '+qtype+' ([select '+qtab+' from '+vis+\
+              '/'+vistable+'])\' >taql_out')
+    f=open('taql_out')
+    for v in f:
+        try:
+            val = float(v.rstrip('\n'))
+        except:
+            pass
+    f.close()#; os.system('rm taql_out')
+    return val
+
+def taql_num (vis,vistable,qtab):
+    os.system('taql \'select '+qtab+' from '+vis+'/'+vistable+'\' >taql_out')
+    f=open('taql_out')
+    for v in f:
+        if 'select result of' in v:
+            n = int(v.split('of')[1].split('row')[0])
+            break
+    return n
+
+def taql_from (vis,vistable,qtab):
+    os.system('taql \'select '+qtab+' from '+vis+'/'+vistable+'\' >taql_out')
+    f = open('taql_out')
+    for v in f:
+        pass
     f.close()
-    if -1 in idx_tels:
-        print 'Did not find one or more of the telescopes'
-        return []
-    return idx_tels
+    return v.rstrip('\n').rstrip(']').lstrip('[').split(',')
 
-# add up all the real and imaginary for all channels and spw, assuming d[time,spw]
-def squash_amp_clph (d,spw,nspw,pol=0):
-    a = np.zeros((len(d)/nspw),dtype='complex')
-    n = np.zeros((len(d)/nspw))
-    for i in range(len(d)):
-        idx = i/nspw
-        a[idx] += np.nansum(d[i]['DATA'][:,pol])
-        n[idx] += len(~np.isnan(d[0]['DATA'][:,pol]))
-    return abs(a/n),norm(np.arctan2((a/n).imag,(a/n).real),False,False)
+def dget_c (vis, tel1, tel2):
+    f,fo = open('model_dget.py'), open('temp.py','w')
+    for line in f:
+        fo.write(line)
+    f.close()
+    os.system('rm d.npy; rm ut.npy; rm uvw.npy')
+    fo.write('d,ut,uvw=dget (\''+vis+'\','+str(tel1)+','+str(tel2)+')\n')
+    fo.write('np.save(\'d\',d)\n')
+    fo.write('np.save(\'ut\',ut)\n')
+    fo.write('np.save(\'uvw\',uvw)\n')
+    fo.close()
+    os.system(CASAPY+' --nologger -c temp.py')
+    d,ut,uvw = np.load('d.npy'),np.load('ut.npy'),np.load('uvw.npy')
+    return d,ut,uvw
 
-# Return two amplitude arrays and a closure phase array from 3 data arrays
-def get_amp_clph (d01,d02,d12,spw,otel,nspw=0,pol=0):
-    global cp012,a01,a02,a12
-    sp = np.array([])
-    for i in range(len(d01)):
-        sp = np.append(sp, spw[i]['DATA_DESC_ID'])
-    nspw = len(np.unique(sp))
-    a01,p01 = squash_amp_clph (d01,spw, nspw)
-    a02,p02 = squash_amp_clph (d02,spw, nspw)
-    a12,p12 = squash_amp_clph (d12,spw, nspw)
-    cp012 = np.rad2deg(p01*otel[0]-p02*otel[1]+p12*otel[2])
-    np.putmask(cp012,cp012>180.0,cp012-360.0)
-    np.putmask(cp012,cp012<-180.0,cp012+360.0)
+def dget_t (vis, tel1, tel2):
+    os.system('taql \'select from %s where ANTENNA1==%d and ANTENNA2==%d giving %s\'' % (vis, tel1, tel2, 'cl_temp.ms'))
+    t = pt.table('cl_temp.ms')
+    ut = np.ravel(np.asarray([tuple(each.values()) for each in t.select('TIME')]))
+    spw = np.ravel(np.asarray([tuple(each.values()) for each in t.select('DATA_DESC_ID')]))
+    dc = t.select('DATA')
+    d = np.asarray([tuple(each.values()) for each in dc])[:,0,:,:]
+    d = np.swapaxes(d,0,2)     # makes the order pol - chan - time as in casa
+    for u in t.select('UVW'):
+        try:
+            uvw = np.vstack ((uvw,u['UVW']))
+        except:
+            uvw = np.copy(u['UVW'])
+    if spw.sum():
+        for i in np.unique(spw):
+            new = np.take(d,np.argwhere(spw==i),axis=2)[:,:,:,0]
+            try:
+                d_out = np.concatenate((d_out,new),axis=1)
+            except:
+                d_out = np.copy(new)
+        d = d_out
+    return d,ut,uvw
+
+def norm(a,isred=True):
+    nlim = np.pi
+    a = a%(2*nlim) if isred else a
+    np.putmask(a,a>nlim,a-2.*nlim)
+    np.putmask(a,a<-nlim,a+2.*nlim)
+    return a
+
+def getap (d,pol=0):
+    ph = np.sum(d[pol],axis=0)
+    return np.sum(abs(d[pol]),axis=0)/d.shape[1],np.arctan2(ph.imag,ph.real)
+
 
 def get_uvw_table (t):
     for u in t.select('UVW'):
@@ -96,46 +129,40 @@ def get_uvw_table (t):
     return uvw
 
 # Get data and u-v arrays from a measurement set on a given triangle
-def data_extract (data):
-    global uvw01,uvw02,uvw12
-    ctemplate = 'taql \'select from %s where ANTENNA1==%d and ANTENNA2==%d giving cl_tmp%d.ms\''
-    os.system ('msoverview in='+data+' >temp_msoverview;cat temp_msoverview')
-    f = open('temp_msoverview')
-    nif = 0
-    for l in f:    # parse msoverview output to get channel information
-        print l
-        if 'TOPO' in l:
-            nif+=1
-            nchan = int(l.split()[2])
-            ch0 = float(l.split()[4])
-            chw = float(l.split()[5])
-        if 'J2000' in l:    # and coordinate information
-            sra,sdec = l[32:].split()[0].split(':'),l[32:].split()[1].split('.')
-            isneg = -1.0 if sdec[0][0]=='-' else 1.0
-            sra =  np.asarray(sra,dtype='float')
-            sdec = np.asarray(sdec,dtype='float')
-            ra = 15.*sra[0]+sra[1]/4.+sra[2]/240.
-            dec = sdec[0]+sdec[1]/60.+sdec[2]/3600.
-    f.close(); os.system ('rm temp_msoverview')
-    wlength = np.mean(LIGHT/(ch0*1.e6 + chw*1.e3*np.arange(nif*nchan)))
-    itel = np.array(get_idx_tels (data,trname))
+def data_extract (vis):
+    global uvw01,uvw02,uvw12,cp012,a01,a02,a12
+    chw = taql_calc(vis,'SPECTRAL_WINDOW','CHAN_WIDTH','mean')
+    ch0 = taql_calc(vis,'SPECTRAL_WINDOW','REF_FREQUENCY','mean')
+    nchan = taql_calc(vis,'SPECTRAL_WINDOW','NUM_CHAN','mean')
+    sra,sdec = taql_from(vis,'FIELD','PHASE_DIR')
+    nspw = taql_num(vis,'SPECTRAL_WINDOW','NUM_CHAN')
+    sra = np.asarray(sra.replace('h',' ').replace('m',' ').split(),dtype='f')
+    sdec = np.asarray(sdec.replace('d',' ').replace('m',' ').split(),dtype='f')
+    ra = 15.0*(sra[0]+sra[1]/60.0+sra[2]/3600.0)
+    dec = sdec[0]+sdec[1]/60.0+sdec[2]/3600.0
+    wlength = np.mean(LIGHT/(ch0 + chw*np.arange(nspw*nchan)))
+    itel = np.array(idx_tels.get_idx_tels (vis,trname))
     # order of telescopes on baselines 0-1, 0-2, 1-2; -1 if in "wrong" order
     otel = 1.-2.*np.asarray([itel[0]>itel[1],itel[0]>itel[2],itel[1]>itel[2]],dtype=float)
     btel = [min(itel[0],itel[1]),max(itel[0],itel[1]),min(itel[0],itel[2]),\
             max(itel[0],itel[2]),min(itel[1],itel[2]),max(itel[1],itel[2])]
-    os.system (ctemplate % (data,btel[0],btel[1],1))
-    os.system (ctemplate % (data,btel[2],btel[3],2))
-    os.system (ctemplate % (data,btel[4],btel[5],3))
-    t01,t02,t12 = pt.table('cl_tmp1.ms'),pt.table('cl_tmp2.ms'),pt.table('cl_tmp3.ms')
-    spw = t01.select('DATA_DESC_ID')
-    d01,d02,d12 = t01.select('DATA'), t02.select('DATA'), t12.select('DATA')
-    get_amp_clph(d01,d02,d12,spw,otel)
-    times = np.array([])
-    for t in t01.select('TIME'):
-        times = np.append(times,t['TIME'])
-    uvw01 = get_uvw_table(t01)/wlength      # km->wavelength
-    uvw02 = get_uvw_table(t02)/wlength
-    uvw12 = get_uvw_table(t12)/wlength
+    if have_tables:
+        d01,ut01,uvw01 = dget_t (vis, btel[0],btel[1])
+        d02,ut02,uvw02 = dget_t (vis, btel[2],btel[3])
+        d12,ut12,uvw12 = dget_t (vis, btel[4],btel[5])
+    else:
+        d01,ut01,uvw01 = dget_c (vis, btel[0],btel[1])
+        d02,ut02,uvw02 = dget_c (vis, btel[2],btel[3])
+        d12,ut12,uvw12 = dget_c (vis, btel[4],btel[5])
+    a01,p01 = getap(d01)
+    a02,p02 = getap(d02)
+    a12,p12 = getap(d12)
+    cp012 = otel[0]*p01-otel[1]*p02+otel[2]*p12
+    np.putmask(cp012,cp012>np.pi,cp012-2*np.pi)
+    np.putmask(cp012,cp012<-np.pi,cp012+2*np.pi)
+    uvw01 /= wlength
+    uvw02 /= wlength
+    uvw12 /= wlength
     print trname,'-> antenna numbers:',itel
     print 'Baseline lengths: %s-%s: %dkm %s-%s: %dkm %s-%s: %dkm' % \
        (trname[0],trname[1],int(np.sqrt((uvw01[0]**2).sum())*wlength/1000),\
@@ -151,9 +178,9 @@ def model_extract (model,itel):
     re01,im01 = uvw2reim (uvw01,model)
     re12,im12 = uvw2reim (uvw12,model)
     re02,im02 = uvw2reim (uvw02,model)
-    ph01 = norm(np.rad2deg(np.arctan2(im01,re01)))
-    ph02 = norm(np.rad2deg(np.arctan2(im02,re02)))
-    ph12 = norm(np.rad2deg(np.arctan2(im12,re12)))
+    ph01 = norm(np.arctan2(im01,re01))
+    ph02 = norm(np.arctan2(im02,re02))
+    ph12 = norm(np.arctan2(im12,re12))
     clph = norm(ph01*otel[0] - ph02*otel[1] + ph12*otel[2])
     return np.hypot(re01,im01),np.hypot(re02,im02),clph
 
@@ -294,6 +321,7 @@ def parallel_function(f):
     def easy_parallize(f, sequence):
         from multiprocessing import Pool
         ncores = max(1,int(os.popen('nproc').read())-1)  # use all cores - 1
+        print 'Using',ncores,'cores'
         pool = Pool(processes=ncores) # depends on available cores
         result = pool.map(f, sequence) # for i in sequence: result[i] = f(i)
         cleaned = [x for x in result if not x is None] # getting results
@@ -311,7 +339,7 @@ def grid_search_thread (k):
     f.close()
     return a
 
-def grid_search (model,cpt,gridcpt,itel,aplot,gcou,grid,gsiz,ginc):
+def grid_search (model,cpt,gridcpt,itel,aplot,gcou,grid,gsiz,ginc,isparallel=ISPARALLEL):
     opt = np.zeros_like(model,dtype='bool')
     args = []
     import copy
@@ -321,15 +349,20 @@ def grid_search (model,cpt,gridcpt,itel,aplot,gcou,grid,gsiz,ginc):
             if grid[iy,ix] == gridcpt:
                 y = ginc*(iy-gsiz/2.0)
                 model[cpt][0],model[cpt][1] = x,y
-                arg = ([],model,opt,itel,aplot,gcou,iy,ix)
-                args.append(copy.deepcopy(arg))   # otherwise overwrites all elements
-                gcou += 1
-    print 'Starting grid search with',len(args),'points'
-    os.system('rm grid_search_thread.log')
-    grid_search_thread.parallel = parallel_function(grid_search_thread)
-    parallel_result = grid_search_thread.parallel (args)
-    for i in range(len(parallel_result)):
-        aplot[args[i][-2],args[i][-1]] = parallel_result[i]
+                if isparallel:
+                    arg = ([],model,opt,itel,aplot,gcou,iy,ix)
+                    args.append(copy.deepcopy(arg))   # otherwise overwrites all elements
+                    gcou += 1
+                else:
+                    aplot[iy][ix] = mod_func ([],model,opt,itel,aplot,gcou,iy,ix)
+                    gcou += 1
+    if isparallel:
+        print 'Starting grid search with',len(args),'points'
+        os.system('rm grid_search_thread.log')
+        grid_search_thread.parallel = parallel_function(grid_search_thread)
+        parallel_result = grid_search_thread.parallel (args)
+        for i in range(len(parallel_result)):
+            aplot[args[i][-2],args[i][-1]] = parallel_result[i]
     np.putmask(aplot,np.isnan(aplot),np.nanmax(aplot))
     model[cpt,:2] = ginc*(np.asarray(ndimage.measurements.minimum_position \
             (aplot)[::-1])-0.5*np.asarray(grid.shape))
@@ -367,13 +400,6 @@ def refine_points (model,cpts,itel,aplot,gcou):
     model = model.reshape(len(model)/6,6)
     return model
 
-def norm(a,isdeg=True,isred=True):
-    nlim = 180.0 if isdeg else np.pi
-    a = a%(2*nlim) if isred else a
-    np.putmask(a,a>nlim,a-2.*nlim)
-    np.putmask(a,a<-nlim,a+2.*nlim)
-    return a
-
 def write_skymodel (ra,dec,model,outname):
     if outname!='':
         f = open(outname,'w')
@@ -393,11 +419,11 @@ def write_skymodel (ra,dec,model,outname):
         f.close()
 
 #============= main script ========================
-def mainscript(data,TRNAME,BSUB=0.3,GRIDSIZE=12.0,PLOTTYPE=20,AMPFIDDLE=True,outname='model_engine.sky'):
+def mainscript(vis,TRNAME,BSUB=0.3,GRIDSIZE=12.0,PLOTTYPE=20,AMPFIDDLE=True,outname='model_engine.sky'):
     global bsub,gridsize,plottype,ampfiddle,glim,trname
     bsub,gridsize,plottype,ampfiddle,trname,gcou = BSUB,GRIDSIZE,PLOTTYPE,AMPFIDDLE,TRNAME,0
     os.system('rm model_engine*.png')
-    itel,wv,ra,dec = data_extract (data)
+    itel,wv,ra,dec = data_extract (vis)
     s_amp = np.sort(np.ravel(a01)); ls = len(s_amp)
     flux1,flux2 = np.median(s_amp), 0.5*(s_amp[int(0.99*ls)]-s_amp[int(0.01*ls)])
     flux = np.median(a01)
@@ -435,4 +461,5 @@ def mainscript(data,TRNAME,BSUB=0.3,GRIDSIZE=12.0,PLOTTYPE=20,AMPFIDDLE=True,out
     write_skymodel (ra,dec,model,'')
     write_skymodel (ra,dec,model,outname)
 #mainscript('./SIM5.ms', ['ST001','DE601','DE605HBA'])
-mainscript('./PP1_av_corr.ms', ['ST001','DE601HBA','DE605HBA'])
+#mainscript('./PP1_av_corr.ms', ['ST001','DE601HBA','DE605HBA'])
+#mainscript('./L519076.ms', ['ST001','DE601','DE605'])
