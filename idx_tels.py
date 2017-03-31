@@ -35,8 +35,6 @@ def get_idx_tels (data, tel):
         print 'Did not find one or more of the telescopes'
         print 'Telescopes present are those in list above'
         return []
+    os.system('rm closure_which')
     return idx_tels
-
-# Test datasets: get_idx_tels('L519076.ms',['ST001','DE601HBA','DE605HBA'])
-#               get_idx_tels('PP1_av_corr.ms',['ST001','DE601HBA','DE605HBA'])
 

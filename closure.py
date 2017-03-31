@@ -17,11 +17,10 @@ try:
 except:
     have_tables = False
 
-def closure (vis='L519076.ms', tel=['ST001','DE601','DE605'], lastv=-1, plotfile='clplot.png'):
+def closure (vis, tel, lastv=-1, plotfile='clplot.png'):
     # Find which number is which antenna
     itels = np.sort(idx_tels.get_idx_tels (vis, tel))
     if itels == []:
-        print 'Failed to find, returning'
         return -1
 
     # Make three reference MSs with pointers
@@ -41,28 +40,7 @@ def closure (vis='L519076.ms', tel=['ST001','DE601','DE605'], lastv=-1, plotfile
     np.putmask(clph,clph>np.pi,clph-2*np.pi)
     np.putmask(clph,clph<-np.pi,clph+2*np.pi)
     # return a statistic - is 1.64 for random closure phase, less for coherent
-    os.system('rm -fr closure_temp*ms')
-    os.system('rm closure_which')
     if len(plotfile):
         plt.plot(clph,'b+')
         plt.savefig(plotfile)
     return np.mean(np.gradient(np.unwrap(clph))**2)
-
-
-####--------------- I am working on the stuff below this line ----------------
-
-# Given a list of files processed by the generic-pipeline into subbands, calculate
-# delays using CASA gaincal (stub - will eventually be replaced either by CASA fringe
-# fitter or transferring delay solutions from the calibrator)
-
-#TESTMSLIST = ['/data/scratch/lb_bw/lbgp/working_directory/lbgp/L401323_SBgr000-10_PP1_uv.dppp.ndppp_prep_target','/data/scratch/lb_bw/lbgp/working_directory/lbgp/L401323_SBgr000-10_PP2_uv.dppp.ndppp_prep_target']
-
-#def fringefit (mslist=TESTMSLIST):
-#    closure_stats = []
-#    for msthis in mslist:
-#        closure_stats.append (closure(vis=msthis, tel=['DE601','DE605','ST001'], lastv=300))
-#    print 'Best source appears to be'
-
-# Test datasets: closure('L519076.ms',['ST001','DE601HBA','DE605HBA'])
-#               closure('PP1_av_corr.ms',['ST001','DE601HBA','DE605HBA'])
-
