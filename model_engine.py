@@ -2,9 +2,8 @@
 #    from u-v data on a particular closure triangle
 #           v.1 Neal Jackson, 2015.09.29
 #           v.2 NJ, 2017.01.16 converted to CASA, many changes
-#           v.3 NJ, 2017.03.07 parallelised; uses CASA if pyrap.tables absent
+#           v.3 NJ, 2017.03.07 parallelised
 import astropy,numpy as np,scipy,sys,os,glob,warnings,multiprocessing,matplotlib,idx_tels
-from taql_funcs import *
 from matplotlib import pyplot as plt; from scipy import ndimage,optimize
 from correlate import *; from mkgauss import *
 try:
@@ -17,8 +16,8 @@ plt.rcParams['image.origin'],plt.rcParams['image.interpolation']='lower','neares
 warnings.simplefilter('ignore')
 RAD2ARC,LIGHT,FIRSTNPY = 3600.*180./np.pi, 2.99792458E+8, './first_2008.simple.npy'
 MX,MY,MF,MW,MR,MP = range(6)
-ISPARALLEL = int(os.popen('nproc').read())>4 # parallelise if >4 cores detected
-CASAPY = '/pkg/casa-release-4.7.0-1-el6/bin/casa' # point to Casa (only if no pyrap.tables)
+ISPARALLEL = int(os.popen('nproc').read())>4
+CASAPY = '/pkg/casa-release-4.7.0-1-el6/bin/casa'
 
 # Make a movie from a set of png files
 def movie (fps=4):
@@ -42,6 +41,35 @@ def uvw2reim (uvw, model):
         im += cmpamp * np.sin(cmpphs)
     return re,im
 
+def taql_calc (vis, vistable, qtab, qtype):
+    os.system('taql \'CALC '+qtype+' ([select '+qtab+' from '+vis+\
+              '/'+vistable+'])\' >taql_out')
+    f=open('taql_out')
+    for v in f:
+        try:
+            val = float(v.rstrip('\n'))
+        except:
+            pass
+    f.close()#; os.system('rm taql_out')
+    return val
+
+def taql_num (vis,vistable,qtab):
+    os.system('taql \'select '+qtab+' from '+vis+'/'+vistable+'\' >taql_out')
+    f=open('taql_out')
+    for v in f:
+        if 'select result of' in v:
+            n = int(v.split('of')[1].split('row')[0])
+            break
+    return n
+
+def taql_from (vis,vistable,qtab):
+    os.system('taql \'select '+qtab+' from '+vis+'/'+vistable+'\' >taql_out')
+    f = open('taql_out')
+    for v in f:
+        pass
+    f.close()
+    return v.rstrip('\n').rstrip(']').lstrip('[').split(',')
+
 def dget_c (vis, tel1, tel2):
     f,fo = open('model_dget.py'), open('temp.py','w')
     for line in f:
@@ -55,7 +83,6 @@ def dget_c (vis, tel1, tel2):
     fo.close()
     os.system(CASAPY+' --nologger -c temp.py')
     d,ut,uvw = np.load('d.npy'),np.load('ut.npy'),np.load('uvw.npy')
-    os.system('rm d.npy; rm ut.npy; rm uvw.npy')
     return d,ut,uvw
 
 def dget_t (vis, tel1, tel2):
@@ -82,9 +109,10 @@ def dget_t (vis, tel1, tel2):
     return d,ut,uvw
 
 def norm(a,isred=True):
-    a = a%(2*np.pi) if isred else a
-    np.putmask(a,a>np.pi,a-2.*np.pi)
-    np.putmask(a,a<-np.pi,a+2.*np.pi)
+    nlim = np.pi
+    a = a%(2*nlim) if isred else a
+    np.putmask(a,a>nlim,a-2.*nlim)
+    np.putmask(a,a<-nlim,a+2.*nlim)
     return a
 
 def getap (d,pol=0):
@@ -129,7 +157,9 @@ def data_extract (vis):
     a01,p01 = getap(d01)
     a02,p02 = getap(d02)
     a12,p12 = getap(d12)
-    cp012 = norm(otel[0]*p01-otel[1]*p02+otel[2]*p12,False)
+    cp012 = otel[0]*p01-otel[1]*p02+otel[2]*p12
+    np.putmask(cp012,cp012>np.pi,cp012-2*np.pi)
+    np.putmask(cp012,cp012<-np.pi,cp012+2*np.pi)
     uvw01 /= wlength
     uvw02 /= wlength
     uvw12 /= wlength
@@ -140,6 +170,8 @@ def data_extract (vis):
         trname[1],trname[2],int(np.sqrt((uvw12[0]**2).sum())*wlength/1000))
     os.system('rm -fr cl_tmp*.ms')
     return itel,np.mean(wlength),ra,dec
+
+# --------------------------------------------------
 
 def model_extract (model,itel):
     otel = 1.-2.*np.asarray([itel[0]>itel[1],itel[0]>itel[2],itel[1]>itel[2]],dtype=float)
@@ -214,6 +246,7 @@ def plotimg (A01,A02,CP012,model,goodness,itel,aplot,gcou):
     if plottype in [10,20]:
         plt.savefig('model_engine_%03d.png'%gcou)
 
+#===================================================
 def ndiff (a,b):
     sqd = np.array([])
     for i in range(-len(a)/2,len(a)/2):
@@ -336,13 +369,9 @@ def grid_search (model,cpt,gridcpt,itel,aplot,gcou,grid,gsiz,ginc,isparallel=ISP
     return model,aplot
 
 def recentroid (model,startcpt,endcpt,ginc,gsiz):
-    model[startcpt:endcpt+1,:2]/=ginc
-    model[startcpt:endcpt+1,3]/=ginc
-    centroid = np.array([0.0,0.0])
-    for i in range(startcpt,endcpt+1):
-        centroid += np.array(model[i,2]*model[i,:2])
-    centroid /= np.sum(model[startcpt:endcpt+1,2])
-    model[startcpt:endcpt+1,:2] += np.array([0.5*gsiz,0.5*gsiz]) - centroid
+    pos = model[startcpt:endcpt+1,:2]*model[startcpt:endcpt+1,2]
+    centroid = np.sum(pos,axis=0)/len(pos)
+    model[startcpt:endcpt+1,:2] -= centroid
     return model
 
 def adjust_all (model,itel,aplot,gcou):
@@ -428,5 +457,4 @@ def mainscript(vis,TRNAME,BSUB=0.3,GRIDSIZE=12.0,PLOTTYPE=20,AMPFIDDLE=True,outn
     write_skymodel (ra,dec,model,'')
     write_skymodel (ra,dec,model,outname)
 #mainscript('./SIM5.ms', ['ST001','DE601','DE605HBA'])
-mainscript('./PP1_av_corr.ms', ['ST001','DE601HBA','DE605HBA'])
-#mainscript('./L519076.ms', ['ST001','DE601','DE605'])
+#mainscript('./PP1_av_corr.ms', ['ST001','DE601HBA','DE605HBA'])
