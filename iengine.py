@@ -19,7 +19,7 @@ try:
     have_tables = True
 except:
     have_tables = False
-CASAPY = '/pkg/casa-release-4.7.0-1-el6/bin/casa'
+CASAPY = '/opt/cep/casa/casa-release-4.7.2-el7/bin/casa'
 #  Change the following things if needed:
 PLOTSIZE = (28,22)    # size of plot on screen (32.5x25 is a big screen)
 CSCALE = matplotlib.cm.hot
@@ -59,6 +59,34 @@ def dget_c (vis, tel1, tel2):
     d,ut,uvw = np.load('d.npy'),np.load('ut.npy'),np.load('uvw.npy')
     os.system('rm d.npy; rm ut.npy; rm uvw.npy')
     return d,ut,uvw
+
+def dget_t (vis, tel1, tel2, spwsel=np.nan):
+    os.system('taql \'select from %s where ANTENNA1==%d and ANTENNA2==%d giving %s\'' % (vis, tel1, tel2, 'cl_temp.ms'))
+    t = pt.table('cl_temp.ms')
+    ut = np.ravel(np.asarray([tuple(each.values()) for each in t.select('TIME')]))
+    spw = np.ravel(np.asarray([tuple(each.values()) for each in t.select('DATA_DESC_ID')]))
+    dc = t.select('DATA')
+    d = np.asarray([tuple(each.values()) for each in dc])[:,0,:,:]
+    d = np.swapaxes(d,0,2)     # makes the order pol - chan - time as in casa
+    for u in t.select('UVW'):
+        try:
+            uvw = np.vstack ((uvw,u['UVW']))
+        except:
+            uvw = np.copy(u['UVW'])
+    if ~np.isnan(spwsel) and spwsel in np.unique(spw):    # request just one spw
+        return d[:,:,spw==spwsel],ut[spw==spwsel],uvw[spw==spwsel]
+    if spw.sum():
+        for i in np.unique(spw):
+            new = np.take(d,np.argwhere(spw==i),axis=2)[:,:,:,0]
+            try:
+                d_out = np.concatenate((d_out,new),axis=1)
+            except:
+                d_out = np.copy(new)
+        d = d_out
+    uspw = np.unique(spw)
+    ref_spw = uspw[len(uspw)/2]    # Take uvw's from middle spw if more than one
+    return d,ut[spw==ref_spw],uvw[spw==ref_spw]
+
 
 def norm(a,isred=True):
     a = a%(2*np.pi) if isred else a
@@ -104,6 +132,18 @@ def data_extract (vis):
         d01,ut01,uvw01 = dget_c (vis, btel[0],btel[1])
         d02,ut02,uvw02 = dget_c (vis, btel[2],btel[3])
         d12,ut12,uvw12 = dget_c (vis, btel[4],btel[5])
+    # check for flagged data in one of the baselines. If so cut the other arrays
+    # this is ugly and inaccurate
+    mindat = min(d01.shape[2],d02.shape[2],d12.shape[2])
+    maxdat = max(d01.shape[2],d02.shape[2],d12.shape[2])
+    if mindat != maxdat:
+        print 'Warning - arrays are not the same length. Cutting the longer one at the end.'
+        print '(Inaccurate - watch the results carefully)'
+        d01, d02, d12 = d01[:,:,:mindat], d02[:,:,:mindat], d12[:,:,:mindat]
+        minuv = min(uvw01.shape[0],uvw02.shape[0],uvw12.shape[0])
+        uvw01, uvw02, uvw12 = uvw01[:minuv],uvw02[:minuv],uvw12[:minuv]
+        mint = min(ut01.shape[0],ut02.shape[0],ut12.shape[0])
+        ut01, ut02, ut12 = ut01[:minuv],ut02[:minuv],ut12[:minuv]
     a01,p01 = getap(d01)
     a02,p02 = getap(d02)
     a12,p12 = getap(d12)
@@ -151,10 +191,10 @@ def write_skymodel (model,outname='iengine.skymodel'):
         sra = s.split()[0].replace('h',':').replace('m',':').replace('s','')
         sdec = s.split()[1].replace('d','.').replace('m','.').replace('s','')
         print 'ME%d, GAUSSIAN, %s, %s, %f, %f, %f, %f'%(i,sra,sdec,model[i,MF],\
-              model[i,MW],model[i,MW]*model[i,MR],np.rad2deg(model[i,MP]))
+              model[i,MW],model[i,MW]*model[i,MR],model[i,MP])
         if outname!='':
             f.write('ME%d, GAUSSIAN, %s, %s, %f, %f, %f, %f\n'%(i,sra,sdec,model[i,MF],\
-                  model[i,MW],model[i,MW]*model[i,MR],np.rad2deg(model[i,MP])))
+                  model[i,MW],model[i,MW]*model[i,MR],model[i,MP]))
     if outname!='':
         f.close()
 
@@ -205,7 +245,7 @@ def onkeyclick (event):
         if event.key == 'F':
             model[idx,MF] *= 1.1
         if event.key == 'w':
-            model[idx,MW] *= 1.1
+            model[idx,MW] /= 1.1
         if event.key == 'W':
             model[idx,MW] *= 1.1
         if event.key == 'r':
@@ -213,9 +253,9 @@ def onkeyclick (event):
         if event.key == 'R':
             model[idx,MR] = max(0.99,model[idx,MR]+0.1)
         if event.key == 'p':
-            model[idx,MP] = min(0.00,model[idx,MP]-0.1)
+            model[idx,MP] = min(0.00,model[idx,MP]-10.0)
         if event.key == 'P':
-            model[idx,MP] = max(180.,model[idx,MP]+0.1)
+            model[idx,MP] = max(180.,model[idx,MP]+10.0)
         if event.key == 'a':
             asiz /= 1.1
         if event.key == 'A':
@@ -257,4 +297,4 @@ def test(vis):
     plt.show()
 
 asiz=10.0
-test('SIM5.ms')
+test('1327+5504_newcorr.ms')
