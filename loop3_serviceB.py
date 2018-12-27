@@ -9,50 +9,79 @@ import pyrap.tables as pt
 import matplotlib; from matplotlib import pyplot as plt
 import h5py
 
-# Given two calibration structures H1 and H2, and antennas to interpolate, replace the
-# phase calibration of H1 for each antenna with an interpolated version of H2.
+# h5 routine to read h5 files. This is done in a separate python call
+# otherwise the hparm does not close properly. No info found on any other
+# way to do this.
 
-##### NEEDS CHANGING FOR AMPLITUDES
+def h5read (htab, solset, soltab):
+    fo = open('tmp_read.py','w')
+    fo.write ('import h5parm,os,pickle\n')
+    fo.write ('tab = h5parm.openSoltab(\'%s\',solsetName=\'%s\',soltabName=\'%s\')\n' % \
+                          (htab,solset,soltab)   )
+    fo.write ('v, vm = tab.getValues()[0], tab.getValues()[1]\n')
+    fo.write ('pickle.dump(v,open(\'v.pkl\',\'wb\'))\n')
+    fo.write ('pickle.dump(vm,open(\'vm.pkl\',\'wb\'))\n')
+    fo.close()
+    os.system ('python tmp_read.py')
+    v = pickle.load (open('v.pkl','rb'))
+    vm = pickle.load (open('vm.pkl','rb'))
+    os.system('rm tmp_read.py;rm v.pkl;rm vm.pkl')
+    return v, vm
 
-def clcal (H1,H2,ant_interp=None,dozero=False):
+# Return a solution to zero (and ones if an amplitude solution exists).
+# Used after detection of an incoherent solution on an antenna.
+def zerosol (H1,ant):
+    h1 = h5py.File(H1,'r+')
+    n1 = h1.get('sol000/phase000')
+    v1 = np.array(n1['val'])
+    z = np.zeros_like(v1[:,:,0,:])
+    ant1 = np.array(h1.get('sol000/phase000/ant'))
+    for i in range(len(ant1)):
+        if ant1[i] in ant:
+            try:
+                h1['sol000/amplitude000/val'][:,:,i,:] = z+1.0
+            except:
+                pass
+            h1['sol000/phase000/val'][:,:,i,:] = z
+    h1.close()
+
+# Given two calibration structures H1 and H2, and antennas to interpolate, 
+# replace the phase calibration of H1 for each antenna with an interpolated 
+# version of H2. (Has been tested for phase, needs testing for amplitude)
+def clcal (H1,H2,ant_interp=None):
+    isamp = True
     h1,h2 = h5py.File(H1,'r+'),h5py.File(H2)
     n1,n2 = h1.get('sol000/phase000'),h2.get('sol000/phase000')
     t1,t2 = np.array(n1['time']),np.array(n2['time'])
     v1,v2 = np.array(n1['val']),np.array(n2['val'])
     a1 = np.array(h1.get('sol000/phase000/ant'))
+    try:
+        na1,na2 = h1.get('sol000/amplitude000'),h2.get('sol000/amplitude000')
+        va1,va2 = np.array(na1['val']),np.array(na2['val'])
+    except:
+        isamp = False
     ant_interp = a1 if ant_interp==None else ant_interp
     for i in range(len(a1)):
         if a1[i] not in ant_interp:
             continue
         for iz in range(v1.shape[1]):
             for ipol in range(v1.shape[3]):
-                if dozero:
-                    z = np.zeros_like (v1[0])
+                if isamp:
+                    zr = va2[:,iz,i,ipol]*np.cos(v2[:,iz,i,ipol])
+                    zc = va2[:,iz,i,ipol]*np.sin(v2[:,iz,i,ipol])
+                    z2 = zr + 1j*zc
+                    z = scipy.interpolate.griddata(t2,z2,t1,method='linear')
+                    h1['sol000/amplitude000/val'][:,iz,i,ipol] = abs(z)
+                    h1['sol000/phase/val'][:,iz,i,ipol] = np.arctan2(z.imag,z.real)
                 else:
-                    z = scipy.interpolate.griddata(t2,np.unwrap(v2[:,iz,i,ipol]),t1,method='linear')
+                    z = scipy.interpolate.griddata(t2,\
+                        np.unwrap(v2[:,iz,i,ipol]),t1,method='linear')
                     while z.max()>np.pi:
                         np.putmask(z,z>np.pi,z-2.*np.pi)
                     while z.min()<-np.pi:
                         np.putmask(z,z<-np.pi,z+2.*np.pi)
-                h1['sol000/phase000/val'][:,iz,i,ipol] = z
-    try:
-        n1,n2 = h1.get('sol000/amplitude000'),h2.get('sol000/amplitude000')
-        t1,t2 = np.array(n1['time']),np.array(n2['time'])
-        v1,v2 = np.array(n1['val']),np.array(n2['val'])
-        a1 = np.array(h1.get('sol000/amplitude000/ant'))
-        ant_interp = a1 if ant_interp==None else ant_interp
-        for i in range(len(a1)):
-            if a1[i] not in ant_interp:
-                continue
-            for iz in range(v1.shape[1]):
-                for ipol in range(v1.shape[3]):
-                    if dozero:
-                        z = np.ones_like (v1[0])
-                    else:
-                        z = scipy.interpolate.griddata(t2,np.unwrap(v2[:,iz,i,ipol]),t1,method='linear')
-                    h1['sol000/amplitude000/val'][:,iz,i,ipol] = z
-    except:
-        pass
+                    h1['sol000/phase000/val'][:,iz,i,ipol] = z
+
     h1.close(); h2.close()
     h1 = h5py.File(H1,'r+')
     n1 = h1.get('sol000/phase000')
@@ -79,13 +108,13 @@ def calib (vis,incol='DATA',outcol='DATA',solint=180,solmode='P',\
     f.write('gaincal.applysolution=%s\n'%('False' if incol==outcol else 'True'))
     f.close()
     time_start = time.time()
-    # Bug fix here: NDPPP leaves the .h5 files unclosed. So we have to start a separate python
-    # session to run the NDPPP on calib.parset, which closes the .h5 files on exit.
+    # Bug fix here: NDPPP leaves the .h5 files unclosed. So we have to 
+    # start a separate python session to run the NDPPP on calib.parset, 
+    # which closes the .h5 files on exit.
     fo=open('calib.py','w')
     fo.write ('import os\nos.system(\'NDPPP calib.parset\')\n')
     fo.close()
     os.system('python calib.py')
-#    os.system('NDPPP calib.parset')
     time_end = time.time()
     print 'NDPPP took %d s' % int(time_end-time_start)
 
@@ -96,20 +125,7 @@ def calib (vis,incol='DATA',outcol='DATA',solint=180,solmode='P',\
 # solutions (here >10%)
 def coherence_metric (htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase000'):
     NANFRAC, INCOH = 0.1, 2.0
-    # do this in another python instance otherwise the hparm does not close properly
-    # write out the dictionaries/arrays, then load again from pickle. Horrible and
-    # should be replaced once anyone can be found who knows how to close h5 files.
-    fo = open('tmp_cohmetric.py','w')
-    fo.write ('import h5parm,os,pickle\n')
-    fo.write ('tab = h5parm.openSoltab(\'%s\',solsetName=\'%s\',soltabName=\'%s\')\n' % \
-                          (htab,solset,soltab)   )
-    fo.write ('v, vm = tab.getValues()[0], tab.getValues()[1]\n')
-    fo.write ('pickle.dump(v,open(\'v.pkl\',\'wb\'))\n')
-    fo.write ('pickle.dump(vm,open(\'vm.pkl\',\'wb\'))\n')
-    fo.close()
-    os.system ('python tmp_cohmetric.py')
-    v = pickle.load (open('v.pkl','rb'))
-    vm = pickle.load (open('vm.pkl','rb'))
+    v, vm = h5read (htab, solset, soltab)
     ant,freq,pol,time = vm['ant'],vm['freq'],vm['pol'],vm['time']
     coh = np.array([])
     for i in range(len(ant)):   # assumes two polarizations XX YY
@@ -125,26 +141,15 @@ def coherence_metric (htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase00
     return coh
     
 
-def snplt (htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase000',antenna=None,nplot=6,
-           outpng=None):
+def snplt (htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase000',\
+           antenna=None,nplot=6,outpng=None):
     outpng = outpng if outpng else htab
-    fo = open('tmp_snplt.py','w')
-    fo.write ('import h5parm,os,pickle\n')
-    fo.write ('tab = h5parm.openSoltab(\'%s\',solsetName=\'%s\',soltabName=\'%s\')\n' % \
-                          (htab,solset,soltab)   )
-    fo.write ('v, vm = tab.getValues()[0], tab.getValues()[1]\n')
-    fo.write ('pickle.dump(v,open(\'v.pkl\',\'wb\'))\n')
-    fo.write ('pickle.dump(vm,open(\'vm.pkl\',\'wb\'))\n')
-    fo.close()
-    os.system ('python tmp_snplt.py')
-    v = pickle.load (open('v.pkl','rb'))
-    vm = pickle.load (open('vm.pkl','rb'))
-#    tab = h5parm.openSoltab(htab,solsetName=solset,soltabName=soltab)
-#    v, vm = tab.getValues()[0], tab.getValues()[1]
+    v,vm = h5read (htab, solset, soltab)
     ant,freq,pol,time = vm['ant'],vm['freq'],vm['pol'],vm['time']
     time = 24.*(time/86400. - int(time[0])/86400)
     iplot = 0
     antenna = antenna if antenna else ant
+    plt.clf()
     while iplot<len(antenna):
         a = antenna[iplot]
         aidx = np.argwhere(ant==a)[0][0]
@@ -154,20 +159,30 @@ def snplt (htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase000',antenna=
                 plt.subplot(nplot,1,1+iplot%nplot)
             else:
                 plt.subplot(nplot,1,1+iplot%nplot,xticks=[])
-            plt.plot(time,np.rad2deg(v[:,0,aidx,ipol]),'+')
-            plt.ylim(-180.,180.);plt.xlim(time[0],time[-1])
-            plt.text(time[0],180.0-12.*nplot,a)
+            if soltab[:5]=='phase':
+                plt.plot(time,np.rad2deg(v[:,0,aidx,ipol]),'+')
+                plt.ylim(-180.,180.);plt.xlim(time[0],time[-1])
+                plt.text(time[0],180.0-12.*nplot,a)
+            else:
+                plt.plot(time,v[:,0,aidx,ipol],'+')
+                vmin,vmax = min(v[:,0,aidx,ipol]),max(v[:,0,aidx,ipol])
+                plt.ylim(vmin,vmax);plt.xlim(time[0],time[-1])
+                plt.text(time[0],vmin+0.9*(vmax-vmin),a)
             plt.subplots_adjust(wspace=0,hspace=0)
         iplot+=1
         if not iplot%nplot:
-            os.system('rm '+outpng+'_%d.png'%(iplot//nplot -1))
-            print '-> '+outpng+'_%d.png'%(iplot//nplot -1)
-            plt.savefig(outpng+'_%d.png'%(iplot//nplot -1),bbox_inches='tight')
+            thispng = outpng+'_%d.png'%(iplot//nplot -1)
+            if os.path.isfile(thispng):
+                os.system('rm %s'%thispng)
+            print '-> %s'%thispng
+            plt.savefig(thispng,bbox_inches='tight')
             plt.clf()
     if iplot%nplot:
-        os.system('rm '+outpng+'_%d.png'%(iplot//nplot))
-        print '-> '+outpng+'_%d.png'%(iplot//nplot)
-        plt.savefig(outpng+'_%d.png'%(iplot//nplot),bbox_inches='tight')
+        thispng = outpng+'_%d.png'%(iplot//nplot)
+        if os.path.isfile(thispng):
+            os.system('rm %s'%thispng)
+        print '-> %s'%thispng
+        plt.savefig(thispng,bbox_inches='tight')
 
 
 # Because I don't like writing enormous command lines in code. Also only have to change once if the
@@ -224,19 +239,43 @@ def imagr (vis,threads=0,mem=100,doupdatemodel=True,tempdir='',dosaveweights=Fal
     print 'Executing: '+cmd
     os.system (cmd)
 
+# returns the maximum baseline length for imaging given
+# a list of coherences for stations
+def getcoh_baseline (antenna_list, coh, ccrit):
+    aname = ['DE601','DE602','DE603','DE604','DE605','DE609','SE','FR',\
+             'UK','PL','IE']
+    alen = [260,580,400,420,230,200,600,700,602,800,800]
+    cohlength = 2000.0
+    print antenna_list
+    print coh
+    np.putmask(coh,coh==-1.0,ccrit)
+    for i in range(len(antenna_list)):
+        for j in range(len(aname)):
+            if antenna_list[i][:len(aname[j])]==aname[j]:
+                if coh[i]>ccrit-0.1:
+                    cohlength = alen[j]
+                    break
+    return 1000.0*cohlength
+        
 
 def montage_plot(vis):
     import glob
-    h5root = np.sort(glob.glob(vis+'*c0.h5'))
-    nloop = len(h5root)
-    imgroot = np.sort(glob.glob(vis+'*MFS*image.fits'))
-    npng = len(glob.glob(vis+'_00_c0.h5*.png'))
+    imgroot = np.sort(glob.glob(vis+'*MFS-image.fits'))
+    nloop = len(imgroot)
+    h5png = glob.glob(vis+'*h5_*.png')
+    npng = 0
+    for i in h5png:
+        npng = max(npng,int(i.split('_')[-1].split('.')[0])+1)
     cmd = 'montage -tile %dx%d -geometry 600x600 '%(npng+1,nloop)
     for i in range(nloop):
         os.system('python aplpy_makeplot.py '+imgroot[i])
+        thisv = imgroot[i].split('-MFS-image.fits')[0]
         for j in range(npng):
-            cmd += vis+'_%02d_c0.h5_%d.png '%(i,j)
-        cmd += vis+'_im%02d-MFS-image.png '%i
-    cmd += 'output.png'
+            this = '%s_c0.h5_%d.png'%(thisv,j)
+            cmd += (this+' ') if os.path.isfile(this) else 'null: '
+        this = thisv+'-MFS-image.png'
+        print 'trying to add',this,os.path.isfile(this)
+        cmd += (this+' ') if os.path.isfile(this) else 'null: '
+    cmd += '%s_output.png'%vis
     print cmd
-    os.system(cmd)   
+    os.system(cmd)
