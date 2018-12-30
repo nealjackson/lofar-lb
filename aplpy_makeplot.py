@@ -16,7 +16,8 @@ import numpy as np,matplotlib,scipy
 from matplotlib import pyplot as plt; from scipy import stats
 import astropy,aplpy,sys,os,argparse
 import astropy.io.fits as pyfits
-sextractor = '/home/njj/root_overflow/usr/bin/sex'
+import fits_axzap
+sextractor = '/home/jackson/sextractor/usr/bin/sex'
 f=open('default.param','w')
 f.write('NUMBER\nX_IMAGE\nY_IMAGE\nFLUX_ISO\nFLUX_RADIUS\nFLUX_MAX\nISOAREA_IMAGE\n')
 f.close()
@@ -33,14 +34,14 @@ parser.add_argument ('-o', '--outpng',help='name of output png file',default='')
 parser.add_argument ('-r', '--crms',help='multiple of rms for lowest contour',type=float,default=3.0)
 parser.add_argument ('-l', '--nolabel',dest='nolabel',help='do not write useful information on plot',action='store_true')
 parser.add_argument ('-s', '--noshift',dest='noshift',help='do not shift centre',action='store_true')
+parser.add_argument ('-m', '--margin',type=float,help='margin allowance',default=1.7)
 args = parser.parse_args()
 
-def make_cut_plot (infits, docut=2.0, outpng='', nolabel=False,  crms=3.0, noshift=False):
-    a = pyfits.getdata(infits)
+def make_cut_plot (infits, docut=2.0, outpng='', nolabel=False,  crms=3.0, noshift=False, margin=1.7):
     print 'Plotting ',infits
-    while a.ndim>2:
-        a=a[0]     # some programs make 3- or 4-d files
-    h = pyfits.getheader(infits)
+    fits_axzap.fits_axzap (infits,'temp.fits')
+    a = pyfits.getdata('temp.fits')
+    h = pyfits.getheader('temp.fits')
     nx,ny = h['NAXIS1'],h['NAXIS2']
     field_radius = h['CDELT2']*ny/2.0
     nx,ny = a.shape[1],a.shape[0]
@@ -56,18 +57,21 @@ def make_cut_plot (infits, docut=2.0, outpng='', nolabel=False,  crms=3.0, noshi
     pyfits.writeto('temp.fits',a,h,overwrite=True)
     os.system(sextractor+' temp.fits')
     s = np.loadtxt('test.cat')
+    s = np.array([s]) if s.ndim==1 else s
     reqsig = stats.norm.ppf(1-0.5/float(nx*ny)) + (2.0 if docut<-1.0 else docut)
     s = s[s[:,5]>reqsig*rms]
     for i in s:
         print 'Component at (%.1f,%.1f): %f' % (i[1],i[2],i[5])
-    gc = aplpy.FITSFigure(infits)
+    gc = aplpy.FITSFigure('temp.fits')
     pixra,pixdec = np.mean(s[:,1]),np.mean(s[:,2])
-    ra = h['CRVAL1']+h['CDELT1']*(pixra-h['CRPIX1'])
     dec = h['CRVAL2']+h['CDELT2']*(pixdec-h['CRPIX2'])
-    racen = h['CRVAL1']+h['CDELT1']*(0.5*nx-h['CRPIX1'])
+    cosdec = np.cos(np.deg2rad(dec))
+    ra = h['CRVAL1']+h['CDELT1']*(pixra-h['CRPIX1'])/cosdec
     deccen = h['CRVAL2']+h['CDELT2']*(0.5*ny-h['CRPIX2'])
+    cosdeccen = np.cos(np.deg2rad(deccen))
+    racen = h['CRVAL1']+h['CDELT1']*(0.5*nx-h['CRPIX1'])/cosdeccen
     pix_range = max(s[:,1].max()-s[:,1].min(),s[:,2].max()-s[:,2].min())
-    deg_range = max(1.5*h['CDELT2']*pix_range,0.1*ny*h['CDELT2'])
+    deg_range = max(margin*h['CDELT2']*pix_range,0.1*ny*h['CDELT2'])
     if docut<-1.0:
         deg_range = -2.0*docut/3600.
     print 'Range is %.1f arcsec, %.1f pix\n'%(1800.0*deg_range,pix_range)
@@ -104,5 +108,7 @@ def make_cut_plot (infits, docut=2.0, outpng='', nolabel=False,  crms=3.0, noshi
     if outpng=='':
         outpng=infits.replace('fits','png')
     gc.save(outpng)
+    os.system('rm default.conv;rm default.sex;rm default.param;rm temp.fits')
+    
 
-make_cut_plot (args.infits, args.docut, args.outpng, args.nolabel, args.crms, args.noshift)
+make_cut_plot (args.infits, args.docut, args.outpng, args.nolabel, args.crms, args.noshift, args.margin)

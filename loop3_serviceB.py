@@ -9,6 +9,13 @@ import pyrap.tables as pt
 import matplotlib; from matplotlib import pyplot as plt
 import h5py
 
+def loop3log (vis, pstr, cret = True):
+    fo = open(vis+'_proc.log','a')
+    fo.write('%s'%pstr)
+    fo.write('\n' if cret else '')
+    fo.close()
+    print pstr
+
 # h5 routine to read h5 files. This is done in a separate python call
 # otherwise the hparm does not close properly. No info found on any other
 # way to do this.
@@ -90,7 +97,7 @@ def clcal (H1,H2,ant_interp=None):
 
 def calib (vis,incol='DATA',outcol='DATA',solint=180,solmode='P',\
            model=None,outms='.',outcal=None,tsamp=8.0):
-    print '------>',solint,tsamp
+    loop3log (vis,'-------> %d %.1f'%(solint,tsamp))
     outcal = vis+'_cal' if outcal==None else outcal
     mgain = 'sourcedb=%s\n'%model if model else 'usemodelcolumn=true\n'
     caltype = 'phaseonly' if solmode=='P' else 'diagonal'
@@ -116,7 +123,7 @@ def calib (vis,incol='DATA',outcol='DATA',solint=180,solmode='P',\
     fo.close()
     os.system('python calib.py')
     time_end = time.time()
-    print 'NDPPP took %d s' % int(time_end-time_start)
+    loop3log(vis,'NDPPP took %d s' % int(time_end-time_start))
 
 
 # Make the coherence parameter. This relies on the difference in the phase
@@ -141,7 +148,7 @@ def coherence_metric (htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase00
     return coh
     
 
-def snplt (htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase000',\
+def snplt (vis,htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase000',\
            antenna=None,nplot=6,outpng=None):
     outpng = outpng if outpng else htab
     v,vm = h5read (htab, solset, soltab)
@@ -174,14 +181,14 @@ def snplt (htab='1327_test.ms_cal.h5',solset='sol000',soltab='phase000',\
             thispng = outpng+'_%d.png'%(iplot//nplot -1)
             if os.path.isfile(thispng):
                 os.system('rm %s'%thispng)
-            print '-> %s'%thispng
+            loop3log(vis,'-> %s'%thispng)
             plt.savefig(thispng,bbox_inches='tight')
             plt.clf()
     if iplot%nplot:
         thispng = outpng+'_%d.png'%(iplot//nplot)
         if os.path.isfile(thispng):
             os.system('rm %s'%thispng)
-        print '-> %s'%thispng
+        loop3log(vis,'-> %s'%thispng)
         plt.savefig(thispng,bbox_inches='tight')
 
 
@@ -236,7 +243,7 @@ def imagr (vis,threads=0,mem=100,doupdatemodel=True,tempdir='',dosaveweights=Fal
     cmd += ('' if weightingrankfilter==0.0 else '-weighting-rank-filter %f '%weightingrankfilter)
     cmd += ('' if weightingrankfiltersize==0.0 else '-weighting-rank-filter-size %f '%weightingrankfiltersize)
     cmd += vis+ '>>wsclean_chunterings'
-    print 'Executing: '+cmd
+    loop3log (vis,'Executing: '+cmd)
     os.system (cmd)
 
 # returns the maximum baseline length for imaging given
@@ -246,8 +253,6 @@ def getcoh_baseline (antenna_list, coh, ccrit):
              'UK','PL','IE']
     alen = [260,580,400,420,230,200,600,700,602,800,800]
     cohlength = 2000.0
-    print antenna_list
-    print coh
     np.putmask(coh,coh==-1.0,ccrit)
     for i in range(len(antenna_list)):
         for j in range(len(aname)):
@@ -274,7 +279,7 @@ def montage_plot(vis):
             this = '%s_c0.h5_%d.png'%(thisv,j)
             cmd += (this+' ') if os.path.isfile(this) else 'null: '
         this = thisv+'-MFS-image.png'
-        print 'trying to add',this,os.path.isfile(this)
+#        print 'trying to add',this,os.path.isfile(this)
         cmd += (this+' ') if os.path.isfile(this) else 'null: '
     cmd += '%s_output.png'%vis
     print cmd

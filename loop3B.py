@@ -8,6 +8,7 @@ CCRIT=1.6
 TSAMP=8.0    # time per sample. All times are in seconds. TSAMP is passed to NDPPP for writing
              # the parset, since solints in NDPPP parsets are in samples.
 
+
 def cleanup(vis):
     os.system('rm -fr %s_processing'%vis)
     os.system('mkdir %s_processing'%vis)
@@ -62,14 +63,14 @@ def selfcal(vis,model='MODEL',outcal_root='',max_sol=3600.0,init_sol=32.0,\
             solint = sol_int_range[i]
             outcal_root = outcal_root if len(outcal_root) else vis
             outcal = outcal_root+'_c%d.h5'%i
-            print 'Beginning pass with solint %.1f sec' % (solint)
+            loop3_service.loop3log (vis,'Beginning pass with solint %.1f sec\n' % (solint))
             loop3_service.calib (vis, solint=solint, outcal=outcal, incol=incol, \
                                  outcol=outcol,solmode='P',tsamp=TSAMP)
-            loop3_service.snplt (htab=outcal,outpng=outcal)
+            loop3_service.snplt (vis,htab=outcal,outpng=outcal)
             coh[i] = loop3_service.coherence_metric (outcal)
-            print 'Coherences: '
+            loop3_service.loop3log(vis,'Coherences: \n')
             for j in range(nant):
-                sys.stdout.write('%s:%f '%(antenna_list[j],coh[i,j]))
+                loop3_service.loop3log(vis,'%s:%f '%(antenna_list[j],coh[i,j]),cret=False)
             if len(coh[i][coh[i]>=CCRIT])==0:
                 break
     # For each antenna in the antenna list, find the selfcal table with 
@@ -102,11 +103,11 @@ def selfcal(vis,model='MODEL',outcal_root='',max_sol=3600.0,init_sol=32.0,\
         outcal = outcal_root+'_c0.h5'%i
         loop3_service.calib (vis, solint=init_sol, outcal=outcal, incol=incol, \
                                  outcol=outcol,solmode='A')
-        loop3_service.snplt (htab=outcal,outpng=outcal,soltab='amplitude000')
+        loop3_service.snplt (vis,htab=outcal,outpng=outcal,soltab='amplitude000')
         allcoh = loop3_service.coherence_metric (outcal)
-        print 'Coherences: '
+        loop3_service.loop3log(vis,'Coherences: \n')
         for i in range(nant):
-            sys.stdout.write('%s:%f '%(antenna_list[i],allcoh[i]))
+            loop3_service.loop3log(vis,'%s:%f '%(antenna_list[i],allcoh[i]),cret=False)
     # For each antenna without any coherence at all, zero the amp/phase 
     # solutions for that antenna
         iant = antenna_list[allcoh<CCRIT]
@@ -160,14 +161,16 @@ def hybridloops (vis,strategy=['P32']*3+['A1800','A1200','A600'],startmod='',ith
     for iloop in range(ploop):
         fitsmask = vis+'_%02d-mask.fits'%(iloop-1) if iloop else ''
         if startmod=='' or iloop:
-            print '******* PHASE LOOP %d running wsclean ************'%iloop
+            pstr = '******* PHASE LOOP %d running wsclean ************'%iloop
+            loop3_service.loop3log (vis, pstr+'\n')
             loop3_service.imagr(vis,cellsize='0.1asec',domultiscale=True,\
                   outname=vis+'_%02d'%iloop,dojoinchannels=True,channelsout=8,robust=0,\
                   fitsmask=fitsmask,dolocalrms=True,maxuvwm=cohlength)
         else:
             # Need something here to produce an image from startmod
             pass
-        print '******* PHASE LOOP %d making mask %s_%02d-MFA-image.fits ************'%(iloop,vis,iloop)
+        pstr='******* PHASE LOOP %d making mask %s_%02d-MFA-image.fits ********'%(iloop,vis,iloop)
+        loop3_service.loop3log (vis, pstr+'\n')
         stdout = sys.stdout; sys.stdout = open('bdsf_chunterings','a')
         img=bdsf.process_image('%s_%02d-MFS-image.fits'%(vis,iloop),atrous_do=True,thresh_isl=ith)
         sys.stdout.close(); sys.stdout = stdout
@@ -175,21 +178,25 @@ def hybridloops (vis,strategy=['P32']*3+['A1800','A1200','A600'],startmod='',ith
         thisstat = measure_statistic(vis+'_%02d-MFS-image.fits'%iloop)
         ####### need a line here to bomb out if no coherence
         # exit loop if clean finishing
-        print '******* PHASE LOOP %d goodness stat %f ************' % (iloop,thisstat)
+        pstr='******* PHASE LOOP %d goodness stat %f ************' % (iloop,thisstat)
+        loop3_service.loop3log (vis, pstr+'\n')
         if thisstat-prevstat<0.01:
-            print '****** EXITING PHASE CAL with diff %f *********'%(thisstat-prevstat)
+            pstr='****** EXITING PHASE CAL with diff %f *********'%(thisstat-prevstat)
+            pstr; loop3_service.loop3log (vis, pstr+'\n')
             break
         else:   
             prevstat = thisstat
             loop3_service.imagr(vis,dopredict=True,fitsmask=fitsmask,autothreshold=2.5,dolocalrms=True,\
                                 robust=0,outname=vis+'_%02d-MFS'%iloop)
-        print '******* PHASE LOOP %d making new cal file %s ************' % (iloop,vis+'_%02d'%iloop)
+        pstr='******* PHASE LOOP %d making new cal file %s ************' % (iloop,vis+'_%02d'%iloop)
+        loop3_service.loop3log (vis, pstr+'\n')
         caltype, sol0 = strategy[iloop][0], float(strategy[iloop][1:])
         coh, cohlength = selfcal(vis,model='MODEL',incol='DATA',outcol='CORRECTED_DATA',\
                       outcal_root=vis+'_%02d'%iloop,caltype=caltype,init_sol=sol0)
         snver = iloop
-        print '******** END PHASE LOOP %d - coherence on %.1f km **********' % \
+        pstr='******** END PHASE LOOP %d - coherence on %.1f km **********' % \
               (iloop,cohlength/1000.)
+        loop3_service.loop3log (vis, pstr+'\n')
     # Exit at this point if we are not doing amplitude cal
     if ploop == nloop:
         exit()
@@ -199,36 +206,43 @@ def hybridloops (vis,strategy=['P32']*3+['A1800','A1200','A600'],startmod='',ith
     visA = vis+'_A'
     # delete all existing files beginning with vis+'_A'
     os.system('rm -fr %s*'%visA)
-    print '****** APPLYING CALIBRATION TABLE %d\n'%snver
+    pstr='****** APPLYING CALIBRATION TABLE %d\n'%snver
+    loop3_service.loop3log (vis, pstr+'\n')
     applycal_split (vis, visA, 'sol000', '%s_%02d_c0.h5' % (vis,snver))
     init_fitsmask = vis+'_%02d-mask.fits'%iloop
     init_img = vis+'_%02d-MFS-image.fits'%iloop
     pred_img = vis+'_%02d-MFS'%iloop
     for iloop in range(ploop,nloop):
         fitsmask = init_fitsmask if iloop==ploop else visA+'_%02d-mask.fits'%(iloop-1)
-        print '******* AMPLITUDE LOOP %d running wsclean ************'%iloop
+        pstr='******* AMPLITUDE LOOP %d running wsclean ************'%iloop
+        loop3_service.loop3log (vis, pstr+'\n')
         loop3_service.imagr(visA,cellsize='0.1asec',domultiscale=True,\
                   outname=visA+'_%02d'%iloop,dojoinchannels=True,channelsout=8,robust=0,\
                   fitsmask=fitsmask,dolocalrms=True,maxuvwm=cohlength)
         image_bdsf = '%s_%02d-MFS-image.fits'%(visA,iloop)
-        print '******* AMPLITUDE LOOP %d making mask %s_%02d-MFS-image.fits ************'%(iloop,visA,iloop)
+        pstr='******* AMPLITUDE LOOP %d making mask %s_%02d-MFS-image.fits ************'%(iloop,visA,iloop)
+        loop3_service.loop3log (vis, pstr+'\n')
         img=bdsf.process_image(image_bdsf,atrous_do=True,thresh_isl=5.0)
         img.export_image(img_type='island_mask',outfile='%s_%02d-mask.fits'%(visA,iloop))
         thisstat = measure_statistic(visA+'_%02d-MFS-image.fits'%iloop)
-        print '******* AMPLITUDE LOOP %d goodness stat %f ************' % (iloop,thisstat)
+        pstr='******* AMPLITUDE LOOP %d goodness stat %f ************' % (iloop,thisstat)
+        loop3_service.loop3log (vis, pstr+'\n')
         if iloop!=ploop and thisstat-prevstat<0.01:
-            print '****** EXITING AMPLITUDE CAL with diff %f *********'%(thisstat-prevstat)
+            pstr='****** EXITING AMPLITUDE CAL with diff %f *********'%(thisstat-prevstat)
+            loop3_service.loop3log (vis, pstr+'\n')
             break
         else:   
             prevstat = thisstat
             loop3_service.imagr(visA,dopredict=True,fitsmask=fitsmask,autothreshold=2.5,dolocalrms=True,\
                                 robust=0,outname=visA+'_%02d-MFS'%iloop)
-        print '******* AMPLITUDE LOOP %d making new cal file %s ************' % (iloop,visA+'_%02d'%iloop)
+        pstr='******* AMPLITUDE LOOP %d making new cal file %s ************' % (iloop,visA+'_%02d'%iloop)
+        loop3_service.loop3log (vis, pstr+'\n')
         caltype, sol0 = strategy[iloop][0], float(strategy[iloop][1:])
         coh,cohlength = selfcal(visA,model='MODEL',incol='DATA',outcol='CORRECTED_DATA',\
                       outcal_root=visA+'_%02d'%iloop,caltype=caltype,init_sol=sol0)
-        print '******** END AMPLITUDE LOOP %d - coherence on %.1f km **********' % \
+        pstr='******** END AMPLITUDE LOOP %d - coherence on %.1f km **********' % \
                       (iloop,cohlength)
+        loop3_service.loop3log (vis, pstr+'\n')
 
 
     fitsmask = init_fitsmask if iloop==ploop else visA+'_%02d-mask.fits'%(iloop-1)
@@ -239,6 +253,6 @@ def hybridloops (vis,strategy=['P32']*3+['A1800','A1200','A600'],startmod='',ith
     
     loop3_service.montage_plot (vis)
     pngfile, h5files = cleanup (vis)
-    print 'Output png file',pngfile
+    loop3_service.loop3log (vis,'Output png file %s'%pngfile)
     print 'Output calibration tables',h5files
     return pngfile,h5files
