@@ -182,7 +182,7 @@ def hybridloops (vis,strategy=['P32']*3+['A1800','A1200','A600'],startmod='',ith
         loop3_service.loop3log (vis, pstr+'\n')
         if thisstat-prevstat<0.01:
             pstr='****** EXITING PHASE CAL with diff %f *********'%(thisstat-prevstat)
-            pstr; loop3_service.loop3log (vis, pstr+'\n')
+            loop3_service.loop3log (vis, pstr+'\n')
             break
         else:   
             prevstat = thisstat
@@ -241,7 +241,7 @@ def hybridloops (vis,strategy=['P32']*3+['A1800','A1200','A600'],startmod='',ith
         coh,cohlength = selfcal(visA,model='MODEL',incol='DATA',outcol='CORRECTED_DATA',\
                       outcal_root=visA+'_%02d'%iloop,caltype=caltype,init_sol=sol0)
         pstr='******** END AMPLITUDE LOOP %d - coherence on %.1f km **********' % \
-                      (iloop,cohlength)
+                      (iloop,cohlength/1000.)
         loop3_service.loop3log (vis, pstr+'\n')
 
 
