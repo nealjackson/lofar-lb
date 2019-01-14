@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.7
 
 import numpy as np,os,sys,glob,astropy,argparse,time
 import pyrap.tables as pt
@@ -256,3 +256,26 @@ def hybridloops (vis,strategy=['P32']*3+['A1800','A1200','A600'],startmod='',ith
     loop3_service.loop3log (vis,'Output png file %s'%pngfile)
     print 'Output calibration tables',h5files
     return pngfile,h5files
+
+
+def main():
+    '''Run loop 3 on a measurement set.'''
+
+    formatter_class = argparse.RawDescriptionHelpFormatter
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=formatter_class)
+
+    parser.add_argument('-v', '--vis', required=True, type=str, help='measurement set')
+    parser.add_argument('-s', '--strategy', default=['P32'] * 3 + ['A1800', 'A1200', 'A600'], help='strategy') 	# there is a better way to pass a list but this is fine when sticking with the default values
+    parser.add_argument('-m', '--startmod', default='', type=str, help='starting model')
+    parser.add_argument('-i', '--ith', default=5.0, type=float, help='iterations')
+
+    args = parser.parse_args()
+    vis = args.vis
+    strategy = args.strategy
+    startmod = args.startmod
+    ith = args.ith
+
+    hybridloops(vis, strategy=strategy, startmod=startmod, ith=ith)
+
+if __name__ == '__main__':
+    main()
