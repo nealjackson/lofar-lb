@@ -89,7 +89,7 @@ width = 1.5*max(decwidth,rawidth*np.cos(dec))
 mkfits (ra,dec,600,width/600.0)
 #for nframe in range(phase.shape[1]):
 os.system('rm zoom*.png;rm zoom*jpeg')
-for nframe in range(500):
+for nframe in range(min(phase.shape[1],500)):
     gc = aplpy.FITSFigure('temp.fits')
     gc.add_grid()
     gc.grid.set_color('black')
