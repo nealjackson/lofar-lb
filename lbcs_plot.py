@@ -106,6 +106,3 @@ while True:
 
 f.close()
 print 'Written lbcs_cat.csv'
-
-
-    
