@@ -1,2 +1,2 @@
 #!/bin/csh
-wget -r -l 10 --reject "index.html*" -np -nH --cut-dirs=3  https://dl-dsoc.nrao.edu/njj/1386013236/em1lj96t1iclghped7obm85318/
+ls /mirror3/scratch/scratch/njj/rqq/newdata
