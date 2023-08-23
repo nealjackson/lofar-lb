@@ -12,6 +12,7 @@ import threading
 import glob
 import requests
 import stager_access
+import numpy as np
 from rclone import RClone   ## DO NOT pip3 install --user python-rclone -- use https://raw.githubusercontent.com/mhardcastle/ddf-pipeline/master/utils/rclone.py
 ###########################
 # Need to define in bash rclone as the executable /state/partition1/apps/rclone1.61.1/rclone
@@ -329,7 +330,7 @@ while True:
             r = [ item for item in result if item['id'] == field ][0]
             s = r['staging_id']
             stage_status = stager_access.get_status(s)
-            #    “new”, “scheduled”, “in progress”, “aborted”, “failed”, “partial success”, “success”, “on hold” 
+            #   'new','scheduled','in progress','aborted','failed','partial success','success','on hold' 
             if stage_status == 'success' or stage_status == 'completed':
                 print('Staging for {:s} is complete, updating status'.format(str(r['staging_id'])))
                 update_status(r['id'],'Staged') ## don't reset the staging id till download happens
