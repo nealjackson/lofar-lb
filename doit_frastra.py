@@ -1,6 +1,8 @@
 import os,sys
 fo=open('doit','w')
-fo.write('#!/bin/csh\nsource /home/njj/.cshrc\nsource /aips/LOGIN.CSH\ncp /mirror3/scratch/scratch/njj/rqq/scripts/proc_casaimg.py /home/njj/public_html\n')
+fo.write('#!/bin/csh\nsource /home/njj/.cshrc\nsource /aips/LOGIN.CSH\n')
+fo.write('wget https://raw.githubusercontent.com/nealjackson/lofar-lb/master/proc_casaimg.py\n')
+fo.write('parseltongue proc_casaimg.py')
 fo.close()
 os.system('chmod 755 doit')
 os.system('./doit')
